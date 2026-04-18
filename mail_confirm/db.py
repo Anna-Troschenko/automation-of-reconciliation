@@ -169,6 +169,43 @@ def collect_pending_recipients(conn: sqlite3.Connection) -> list[str]:
     return [str(row["r"]) for row in rows]
 
 
+def min_pending_digest_interval_sec(
+    conn: sqlite3.Connection, default_interval: int
+) -> Optional[int]:
+    row = conn.execute(
+        """
+        SELECT MIN(COALESCE(rd.interval_seconds, ?)) AS m
+        FROM confirmations c
+        LEFT JOIN recipient_digest rd
+          ON rd.email = c.recipient_email COLLATE NOCASE
+        WHERE c.digest_sent_at IS NULL AND c.recipient_email IS NOT NULL
+              AND c.recipient_email != ''
+        """,
+        (default_interval,),
+    ).fetchone()
+    if row is None or row["m"] is None:
+        return None
+    return int(row["m"])
+
+
+def daemon_imap_idle_chunk_sec(
+    conn: sqlite3.Connection, *, imap_cap: float, digest_default: int
+) -> float:
+    m = min_pending_digest_interval_sec(conn, digest_default)
+    if m is None:
+        return min(float(imap_cap), float(digest_default))
+    urgent = max(5.0, float(min(digest_default, m)))
+    return min(float(imap_cap), urgent)
+
+
+def daemon_poll_sec(conn: sqlite3.Connection, *, poll_cap: int, digest_default: int) -> int:
+    m = min_pending_digest_interval_sec(conn, digest_default)
+    if m is None:
+        return max(5, poll_cap)
+    urgent = max(5, min(digest_default, m))
+    return min(max(5, poll_cap), urgent)
+
+
 def digest_due(
     conn: sqlite3.Connection,
     recipient: str,

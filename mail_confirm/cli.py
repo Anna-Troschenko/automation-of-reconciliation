@@ -8,6 +8,8 @@ import time
 from typing import Optional
 
 from mail_confirm.db import (
+    daemon_imap_idle_chunk_sec,
+    daemon_poll_sec,
     open_database,
     set_recipient_interval,
 )
@@ -267,7 +269,6 @@ def main() -> int:
                     conn = open_database(args.db)
                 assert conn is not None
                 poll_sec = max(5, args.imap_poll_sec)
-                idle_chunk = min(args.imap_idle_chunk_sec, args.digest_interval_sec)
                 use_uid = True
 
                 while True:
@@ -283,9 +284,14 @@ def main() -> int:
                         select_folder(mail, args.sent_folder)
                         idle_ok = bool(args.imap_idle) and imap_supports_idle(mail)
                         if idle_ok:
+                            _ic = daemon_imap_idle_chunk_sec(
+                                conn,
+                                imap_cap=args.imap_idle_chunk_sec,
+                                digest_default=args.digest_interval_sec,
+                            )
                             print(
-                                f"Демон: IMAP IDLE (макс. {idle_chunk:.0f}s на сессию) + UID-курсор; "
-                                f"SMTP {smtp_host}:{args.smtp_port}; сводки каждые {args.digest_interval_sec}s",
+                                f"Демон: IMAP IDLE (до {_ic:.0f}s за цикл при неотпр. сводках) + UID-курсор; "
+                                f"SMTP {smtp_host}:{args.smtp_port}; деф. интервал {args.digest_interval_sec}s",
                                 file=sys.stderr,
                             )
                         else:
@@ -335,16 +341,29 @@ def main() -> int:
                         scan_and_digest()
                         while True:
                             if idle_ok:
+                                idle_chunk = daemon_imap_idle_chunk_sec(
+                                    conn,
+                                    imap_cap=args.imap_idle_chunk_sec,
+                                    digest_default=args.digest_interval_sec,
+                                )
                                 wake = idle_wait_sent_folder(mail, idle_chunk)
                                 if wake == "unsupported":
                                     idle_ok = False
                                     print("IDLE перестал работать, переключаюсь на опрос.", file=sys.stderr)
-                                    time.sleep(poll_sec)
+                                    time.sleep(
+                                        daemon_poll_sec(
+                                            conn, poll_cap=poll_sec, digest_default=args.digest_interval_sec
+                                        )
+                                    )
                                 elif wake == "exists":
                                     print("IMAP: EXISTS — новое письмо в папке, синхронизация.", file=sys.stderr)
                                 scan_and_digest()
                             else:
-                                time.sleep(poll_sec)
+                                time.sleep(
+                                    daemon_poll_sec(
+                                        conn, poll_cap=poll_sec, digest_default=args.digest_interval_sec
+                                    )
+                                )
                                 scan_and_digest()
                     except (imaplib.IMAP4.error, OSError) as e:
                         print(f"IMAP: соединение: {e}, переподключение через {poll_sec}s", file=sys.stderr)
