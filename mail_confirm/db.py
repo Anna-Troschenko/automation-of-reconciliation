@@ -253,15 +253,20 @@ def get_accumulation_cutoff(conn: sqlite3.Connection, email: str) -> Optional[da
         return None
 
 def confirmation_acceptable_for_recipient(
-    conn: sqlite3.Connection, email: str, date_hdr: Optional[str]
+    conn: sqlite3.Connection, email: str, letter_sent_hdr: Optional[str]
 ) -> bool:
-    """После снятия паузы не принимаем письма, отправленные до момента возобновления."""
+    """После снятия паузы / добавления компании не принимаем письма, отправленные раньше.
+
+    Сравнивается дата отправки письма (заголовок Date), а не «Дата получения» из тела."""
     cutoff = get_accumulation_cutoff(conn, email)
     if cutoff is None:
         return True
-    msg_dt = parse_stored_sent_at(date_hdr)
+    msg_dt = parse_stored_sent_at(letter_sent_hdr)
     if msg_dt is None:
         return False
+    s = str(letter_sent_hdr or "").strip()
+    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+        return msg_dt.date() >= cutoff.date()
     return msg_dt >= cutoff
 
 def count_pending_for_recipient(conn: sqlite3.Connection, email: str) -> int:
@@ -291,7 +296,7 @@ def insert_confirmation_row(
     if not em or not recipient_can_accumulate(conn, em):
         return False
     sent_at = received_date if received_date else date_hdr
-    if not confirmation_acceptable_for_recipient(conn, em, sent_at):
+    if not confirmation_acceptable_for_recipient(conn, em, date_hdr):
         return False
     try:
         cur = conn.execute(
@@ -390,14 +395,16 @@ def set_recipient_trigger(
     elif trigger_type == TRIGGER_KEYWORD and "interval_seconds" not in cfg:
         interval_sec = 300
     company = (company_name or "").strip()
+    resumed_at = utc_now_sql()
     conn.execute("DELETE FROM recipient_blocklist WHERE email = ? COLLATE NOCASE", (em,))
     conn.execute(
         """
         INSERT INTO recipient_digest (
             email, interval_seconds, last_digest_sent_at,
-            trigger_type, trigger_config, immediate_digest, status, company_name
+            trigger_type, trigger_config, immediate_digest, status, company_name,
+            accumulation_resumed_at
         )
-        VALUES (?, ?, NULL, ?, ?, 0, ?, ?)
+        VALUES (?, ?, NULL, ?, ?, 0, ?, ?, ?)
         ON CONFLICT(email) DO UPDATE SET
             interval_seconds = excluded.interval_seconds,
             trigger_type = excluded.trigger_type,
@@ -413,6 +420,7 @@ def set_recipient_trigger(
             json.dumps(cfg, ensure_ascii=False),
             RECIPIENT_STATUS_ACTIVE,
             company,
+            resumed_at,
         ),
     )
     conn.commit()

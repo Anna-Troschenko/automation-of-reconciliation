@@ -59,6 +59,7 @@ def scan_sent_and_store(
     warned_no_recipient = False
     warned_unconfigured: set[str] = set()
     warned_pause_backlog: set[str] = set()
+    warned_invalid_append: set[tuple[str, int]] = set()
     if conn is not None:
         sync_database_reads(conn)
     if conn is not None and use_uid_cursor:
@@ -172,17 +173,23 @@ def scan_sent_and_store(
                 from mail_confirm.reconciliations import reconciliation_belongs_to
 
                 if not reconciliation_belongs_to(conn, append_rid, recipient):
-                    print(
-                        f"IMAP: «Дополнение в сверку {append_rid}» — сверка не найдена "
-                        f"у {recipient}, привязка к открытой сверке.",
-                        file=sys.stderr,
+                    warn_key = (recipient, append_rid)
+                    if warn_key not in warned_invalid_append:
+                        print(
+                            f"IMAP: «Дополнение в сверку {append_rid}» — сверка не найдена "
+                            f"у {recipient}, письмо пропущено.",
+                            file=sys.stderr,
+                        )
+                        warned_invalid_append.add(warn_key)
+                    skipped += len(confirmations)
+                    CONFIRMATIONS_SKIPPED.labels(reason="append_not_found").inc(
+                        len(confirmations)
                     )
-                    append_rid = None
+                    continue
 
             inserted_in_msg = 0
             for idx, (id_yav, id_sop, event_date, received_date) in enumerate(confirmations):
-                effective_sent = received_date if received_date else date_hdr
-                if not confirmation_acceptable_for_recipient(conn, recipient, effective_sent):
+                if not confirmation_acceptable_for_recipient(conn, recipient, date_hdr):
                     if recipient not in warned_pause_backlog:
                         print(
                             f"IMAP: пропуск подтверждения до возобновления накопления "

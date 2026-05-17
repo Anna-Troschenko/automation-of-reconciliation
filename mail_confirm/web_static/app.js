@@ -90,6 +90,21 @@ function formatEventDate(s) {
   return s;
 }
 
+function formatReceivedDate(s) {
+  if (!s) return "—";
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (iso) return `${iso[3]}.${iso[2]}.${iso[1]}`;
+  const d = new Date(s.replace(" ", "T") + "Z");
+  if (!Number.isNaN(d.getTime())) {
+    return d.toLocaleDateString("ru-RU", { dateStyle: "short" });
+  }
+  const parsed = new Date(s);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleDateString("ru-RU", { dateStyle: "short" });
+  }
+  return s;
+}
+
 function navigate(hash) {
   location.hash = hash;
 }
@@ -405,6 +420,7 @@ async function renderReconciliation(id) {
                 <tr>
                   <th>ID явления</th>
                   <th>Сопоставленный</th>
+                  <th>Дата получения</th>
                   <th>Дата явления</th>
                   <th>Статус</th>
                 </tr>
@@ -419,6 +435,7 @@ async function renderReconciliation(id) {
                     return `<tr>
                       <td>${esc(r.id_yavleniya)}</td>
                       <td>${esc(r.id_sopostavlennyi)}</td>
+                      <td>${esc(formatReceivedDate(r.sent_at))}</td>
                       <td>${esc(formatEventDate(r.event_date))}</td>
                       <td>${status}</td>
                     </tr>`;
