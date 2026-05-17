@@ -221,6 +221,17 @@ def main() -> int:
         default=int(env_first("WEB_PORT", default="8765") or "8765"),
         help="Порт веб-интерфейса",
     )
+    parser.add_argument(
+        "--metrics-host",
+        default=env_first("METRICS_HOST", default="0.0.0.0"),
+        help="Адрес, на котором --daemon отдаёт Prometheus-метрики (по умолчанию 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=int(env_first("METRICS_PORT", default="9101") or "9101"),
+        help="Порт /metrics в --daemon (0 — не запускать)",
+    )
     args = parser.parse_args()
 
     if args.use_ssl is None:
@@ -313,6 +324,22 @@ def main() -> int:
                 assert conn is not None
                 poll_sec = max(5, args.imap_poll_sec)
                 use_uid = True
+
+                if args.metrics_port > 0:
+                    try:
+                        from mail_confirm.metrics import start_http_server
+
+                        start_http_server(
+                            host=args.metrics_host,
+                            port=args.metrics_port,
+                            db_path=args.db,
+                        )
+                    except OSError as e:
+                        print(
+                            f"metrics: не удалось поднять /metrics на "
+                            f"{args.metrics_host}:{args.metrics_port}: {e}",
+                            file=sys.stderr,
+                        )
 
                 while True:
                     try:
@@ -407,6 +434,9 @@ def main() -> int:
                                 scan_and_digest()
 
                     except (imaplib.IMAP4.error, OSError) as e:
+                        from mail_confirm.metrics import IMAP_ERRORS
+
+                        IMAP_ERRORS.inc()
                         print(f"IMAP: соединение: {e}, переподключение через {poll_sec}s", file=sys.stderr)
                         time.sleep(poll_sec)
                     except Exception as e:

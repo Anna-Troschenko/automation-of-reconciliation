@@ -12,6 +12,7 @@ import sqlite3
 
 from mail_confirm.constants import DIGEST_SMTP_SUBJECT
 from mail_confirm.email_parse import format_confirmation_line
+from mail_confirm.metrics import DIGEST_LETTERS_SENT, DIGESTS_SENT, SMTP_ERRORS
 
 from mail_confirm.db import (
     clear_immediate_digest,
@@ -223,10 +224,14 @@ def send_digest_email(
         msg.set_content("\n".join(body_parts) + "\n", charset="utf-8")
 
 
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=60) as smtp:
-        smtp.starttls(context=ssl.create_default_context())
-        smtp.login(smtp_user, smtp_password)
-        smtp.send_message(msg)
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=60) as smtp:
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.login(smtp_user, smtp_password)
+            smtp.send_message(msg)
+    except Exception:
+        SMTP_ERRORS.inc()
+        raise
 
 def send_reconciliation_by_id(
     conn: sqlite3.Connection,
@@ -273,11 +278,17 @@ def send_reconciliation_by_id(
     )
     when = utc_now_sql()
 
+    was_open = row["sent_at"] is None
     mark_reconciliation_sent(conn, reconciliation_id, when)
 
     touch_last_digest_sent(conn, recipient, when)
     clear_immediate_digest(conn, recipient)
     conn.commit()
+
+    kind_label = "initial" if was_open else "supplement"
+    DIGESTS_SENT.labels(kind=kind_label).inc()
+    DIGEST_LETTERS_SENT.labels(kind=kind_label).inc(len(lines))
+
     return len(lines)
 
 def warn_digest_interval_waiting(
@@ -426,6 +437,9 @@ def _send_pending_for_recipient(
             mark_reconciliation_sent(conn, rid, when)
         else:
             _mark_pending_sent_for_reconciliation(conn, rid, when)
+        kind_label = "initial" if is_open else "supplement"
+        DIGESTS_SENT.labels(kind=kind_label).inc()
+        DIGEST_LETTERS_SENT.labels(kind=kind_label).inc(len(lines))
         any_sent = True
 
     if any_sent and not dry_run:

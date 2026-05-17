@@ -36,6 +36,7 @@ from mail_confirm.reconciliations import (
     list_reconciliations_for_recipient,
 )
 
+from mail_confirm.metrics import REGISTRY as METRICS_REGISTRY, WEB_REQUESTS, install_db_collector
 from mail_confirm.smtp_ops import SmtpConfig, send_reconciliation_by_id, smtp_config_from_env
 from mail_confirm.triggers import TRIGGER_KEYWORD, VALID_TRIGGER_TYPES, _parse_config
 
@@ -102,8 +103,6 @@ def _validate_payload(data: dict[str, Any]) -> tuple[str, str, dict[str, Any], s
 def _bg_send_reconciliation(
     db_path: str, reconciliation_id: int, smtp: SmtpConfig
 ) -> None:
-    """Отправить сводку #rid в фоне (вызывается из ThreadingHTTPServer'а
-    или из отдельного worker-треда, чтобы UI не ждал SMTP-handshake)."""
     conn = open_database_fast(db_path)
     try:
         n = send_reconciliation_by_id(conn, reconciliation_id, smtp)
@@ -119,11 +118,45 @@ def _bg_send_reconciliation(
     finally:
         conn.close()
 
+def _metrics_endpoint(path: str) -> str:
+    if path in ("/", "/index.html"):
+        return "/"
+    if path.startswith("/static/"):
+        return "/static/*"
+    if path.startswith("/api/companies/") and path.endswith("/reconciliations"):
+        return "/api/companies/:email/reconciliations"
+    if path.startswith("/api/companies/"):
+        return "/api/companies/:email"
+    if path.startswith("/api/reconciliations/") and path.endswith("/send"):
+        return "/api/reconciliations/:id/send"
+    if path.startswith("/api/reconciliations/"):
+        return "/api/reconciliations/:id"
+    if path == "/metrics":
+        return "/metrics"
+    if path.startswith("/api/"):
+        return path
+    return "other"
+
+
 def make_handler(db_path: str, smtp: Optional[SmtpConfig]):
+    install_db_collector(db_path)
+
     class Handler(BaseHTTPRequestHandler):
 
         def log_message(self, fmt: str, *args: object) -> None:
             pass
+
+        def send_response(self, code, message=None):  # type: ignore[override]
+            try:
+                endpoint = _metrics_endpoint(urlparse(self.path).path)
+                WEB_REQUESTS.labels(
+                    method=self.command or "GET",
+                    endpoint=endpoint,
+                    status=str(int(code)),
+                ).inc()
+            except Exception:
+                pass
+            super().send_response(code, message)
 
         def _json(self, status: int, payload: Any) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -153,6 +186,24 @@ def make_handler(db_path: str, smtp: Optional[SmtpConfig]):
                 return self._file(_STATIC / "style.css", "text/css; charset=utf-8")
             if path == "/static/app.js":
                 return self._file(_STATIC / "app.js", "application/javascript; charset=utf-8")
+            if path == "/metrics":
+                body = METRICS_REGISTRY.render()
+                self.send_response(HTTPStatus.OK)
+                self.send_header(
+                    "Content-Type", "text/plain; version=0.0.4; charset=utf-8"
+                )
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if path == "/api/health":
+                payload = json.dumps({"ok": True}).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
 
             qs = parse_qs(parsed.query)
             m_recon = _RECON_SEND.match(path)

@@ -27,6 +27,12 @@ from mail_confirm.email_parse import (
     primary_recipient_email,
 )
 
+from mail_confirm.metrics import (
+    CONFIRMATIONS_INSERTED,
+    CONFIRMATIONS_SKIPPED,
+    IMAP_ERRORS,
+    IMAP_SCANS,
+)
 from mail_confirm.triggers import check_outbound_keyword
 from mail_confirm.imap_client import (
     fetch_sent_uids,
@@ -45,6 +51,7 @@ def scan_sent_and_store(
     dry_run: bool,
     default_digest_interval: int,
 ) -> Tuple[int, int, int]:
+    IMAP_SCANS.inc()
     inserted = 0
     skipped = 0
     warned_no_recipient = False
@@ -116,6 +123,7 @@ def scan_sent_and_store(
                 )
                 warned_no_recipient = True
             skipped += len(confirmations)
+            CONFIRMATIONS_SKIPPED.labels(reason="no_recipient").inc(len(confirmations))
             continue
 
         if conn is not None:
@@ -125,6 +133,7 @@ def scan_sent_and_store(
                     file=sys.stderr,
                 )
                 skipped += len(confirmations)
+                CONFIRMATIONS_SKIPPED.labels(reason="blocked").inc(len(confirmations))
                 continue
             if not is_recipient_configured(conn, recipient):
                 if recipient not in warned_unconfigured:
@@ -134,9 +143,11 @@ def scan_sent_and_store(
                     )
                     warned_unconfigured.add(recipient)
                 skipped += len(confirmations)
+                CONFIRMATIONS_SKIPPED.labels(reason="unconfigured").inc(len(confirmations))
                 continue
             if not recipient_can_accumulate(conn, recipient):
                 skipped += len(confirmations)
+                CONFIRMATIONS_SKIPPED.labels(reason="paused").inc(len(confirmations))
                 continue
             if not confirmation_acceptable_for_recipient(conn, recipient, date_hdr):
                 if recipient not in warned_pause_backlog:
@@ -146,6 +157,7 @@ def scan_sent_and_store(
                     )
                     warned_pause_backlog.add(recipient)
                 skipped += len(confirmations)
+                CONFIRMATIONS_SKIPPED.labels(reason="pause_backlog").inc(len(confirmations))
                 continue
             if append_rid is not None:
                 from mail_confirm.reconciliations import reconciliation_belongs_to
@@ -174,8 +186,10 @@ def scan_sent_and_store(
                 ):
                     inserted += 1
                     inserted_in_msg += 1
+                    CONFIRMATIONS_INSERTED.inc()
                 else:
                     skipped += 1
+                    CONFIRMATIONS_SKIPPED.labels(reason="duplicate").inc()
             if inserted_in_msg and append_rid is not None:
                 print(
                     f"IMAP: добавлено {inserted_in_msg} подтвержд. в сверку #{append_rid} "

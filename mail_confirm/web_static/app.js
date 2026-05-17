@@ -316,10 +316,10 @@ async function renderCompany(email) {
                 !open && pending > 0 ? ` (+${pending})` : ""
               }</button>`
             : "";
-          const iter = Number(r.iteration || 0);
+          const iter = Math.max(1, Number(r.iteration || 1));
           const sentIters = Number(r.sent_iterations || 0);
           const iterHint = pending > 0 && sentIters > 0 ? " (готовится дополнение)" : "";
-          const iterCell = iter > 0 ? `#${iter}` : "—";
+          const iterCell = `#${iter}`;
           return `<tr>
             <td><strong>#${r.id}</strong>${open ? ' <span class="recon-open">открыта</span>' : ""}</td>
             <td title="Отправлений: ${sentIters}${iterHint}">${iterCell}</td>

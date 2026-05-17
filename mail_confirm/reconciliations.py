@@ -144,7 +144,14 @@ def list_reconciliations_for_recipient(
     for row in rows:
         d = dict(row)
         sent_iters = int(d.get("sent_iterations") or 0)
-        d["iteration"] = max(0, sent_iters - 1) if sent_iters > 0 else 0
+        pending = int(d.get("pending_count") or 0)
+        if sent_iters == 0:
+            iteration = 1
+        elif pending > 0:
+            iteration = sent_iters + 1
+        else:
+            iteration = sent_iters
+        d["iteration"] = iteration
         d["sent_iterations"] = sent_iters
         result.append(d)
     return result

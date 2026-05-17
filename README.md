@@ -95,3 +95,33 @@ ID сверок — глобальный сквозной счётчик (AUTOIN
 - история сверок с кнопкой **«Отправить»** для каждой (в т.ч. дополнения в закрытые: `Отправить (+N)`).
 
 В шапке справа — кнопка **«Шаблон письма»**. Открывает выезжающую панель, где можно отредактировать текст-предисловие, которое подставляется в каждое письмо со сверкой перед строкой `ID сверки: …` и таблицей. Кнопка «По умолчанию» возвращает стандартный текст.
+
+### Prometheus + Grafana
+
+В каталоге `monitoring/` лежит docker с Prometheus и Grafana.
+
+Запуск:
+
+```bash
+./run --web-ui --web-host 0.0.0.0 --web-port 8765
+
+# 2. В другом терминале
+docker compose -f monitoring/docker-compose.yml up -d
+```
+
+Дальше:
+
+- Grafana: http://localhost:3000
+
+Структура каталога:
+
+```
+monitoring/
+├── docker-compose.yml
+├── prometheus.yml
+└── grafana/
+    ├── dashboards/mail-confirm.json
+    └── provisioning/
+        ├── datasources/prometheus.yml
+        └── dashboards/dashboards.yml
+```
