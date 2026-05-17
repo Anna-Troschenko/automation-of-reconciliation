@@ -3,13 +3,38 @@ from __future__ import annotations
 import base64
 import email
 import imaplib
+import socket
 import ssl
 import sys
 from email.message import Message
 from typing import Iterator, Literal, Optional, Tuple
 
-IdleWake = Literal["exists", "timeout", "unsupported"]
+def _enable_tcp_keepalive(mail: imaplib.IMAP4) -> None:
+    """Включить TCP keepalive на сокете IMAP: помогает обнаруживать «тихие»
+    обрывы NAT/firewall’ом раньше, чем IDLE-сессия молча провисит часы."""
+    sock = getattr(mail, "sock", None)
+    if sock is None:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except OSError:
+        return
 
+    for opt_name, val in (
+        ("TCP_KEEPIDLE", 60),
+        ("TCP_KEEPINTVL", 30),
+        ("TCP_KEEPCNT", 4),
+        ("TCP_KEEPALIVE", 60),
+    ):
+        opt = getattr(socket, opt_name, None)
+        if opt is None:
+            continue
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, opt, val)
+        except OSError:
+            pass
+
+IdleWake = Literal["exists", "timeout", "unsupported"]
 
 def fetch_uids_after(
     mail: imaplib.IMAP4, last_uid: int, limit: Optional[int]
@@ -24,7 +49,6 @@ def fetch_uids_after(
     if limit is not None and len(uids) > limit:
         uids = uids[-limit:]
     return uids
-
 
 def encode_imap_modified_utf7(s: str) -> str:
     res: list[str] = []
@@ -51,11 +75,9 @@ def encode_imap_modified_utf7(s: str) -> str:
     flush()
     return "".join(res)
 
-
 def quote_imap_mailbox(name: str) -> str:
     inner = name.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{inner}"'
-
 
 def try_enable_imap_utf8(mail: imaplib.IMAP4) -> None:
     caps = getattr(mail, "capabilities", None)
@@ -68,11 +90,9 @@ def try_enable_imap_utf8(mail: imaplib.IMAP4) -> None:
     except imaplib.IMAP4.error:
         pass
 
-
 def imap_mailbox_select_arg(mail: imaplib.IMAP4, folder: str) -> str:
     name = folder if mail.utf8_enabled else encode_imap_modified_utf7(folder)
     return quote_imap_mailbox(name)
-
 
 def imap_connect(
     host: str,
@@ -88,16 +108,18 @@ def imap_connect(
 
     if use_ssl:
         mail = imaplib.IMAP4_SSL(host, port)
+        _enable_tcp_keepalive(mail)
         mail.login(user, password)
     else:
         mail = imaplib.IMAP4(host, port)
+        _enable_tcp_keepalive(mail)
         if use_starttls:
             ctx = ssl.create_default_context()
             mail.starttls(ssl_context=ctx)
+            _enable_tcp_keepalive(mail)
         mail.login(user, password)
     try_enable_imap_utf8(mail)
     return mail
-
 
 def select_folder(mail: imaplib.IMAP4, folder: str) -> None:
     status, data = mail.select(imap_mailbox_select_arg(mail, folder), readonly=True)
@@ -107,7 +129,6 @@ def select_folder(mail: imaplib.IMAP4, folder: str) -> None:
             "Укажите верное имя (см. --list-folders)."
         )
 
-
 def fetch_sent_uids(mail: imaplib.IMAP4, limit: Optional[int]) -> list[bytes]:
     status, data = mail.search(None, "ALL")
     if status != "OK" or not data or not data[0]:
@@ -116,7 +137,6 @@ def fetch_sent_uids(mail: imaplib.IMAP4, limit: Optional[int]) -> list[bytes]:
     if limit is not None and len(uids) > limit:
         uids = uids[-limit:]
     return uids
-
 
 def iter_rfc822_messages(
     mail: imaplib.IMAP4, uids: list[bytes], *, use_imap_uid: bool
@@ -134,7 +154,6 @@ def iter_rfc822_messages(
         msg = email.message_from_bytes(bytes(raw))
         yield uid, msg
 
-
 def imap_supports_idle(mail: imaplib.IMAP4) -> bool:
     if not callable(getattr(mail, "idle", None)):
         return False
@@ -149,7 +168,6 @@ def imap_supports_idle(mail: imaplib.IMAP4) -> bool:
         if isinstance(c, str) and c.upper() == "IDLE":
             return True
     return False
-
 
 def idle_wait_sent_folder(
     mail: imaplib.IMAP4, chunk_sec: float
@@ -167,7 +185,6 @@ def idle_wait_sent_folder(
     except imaplib.IMAP4.error:
         return "unsupported"
     return "exists" if saw_exists else "timeout"
-
 
 def list_folders(mail: imaplib.IMAP4) -> None:
     status, folders = mail.list()

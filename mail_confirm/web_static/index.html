@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Сверки</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-theme="sky">
+  <header class="topbar">
+    <a href="#/" class="brand">Сверки</a>
+    <div class="search-wrap">
+      <input type="search" id="global-search" placeholder="Компания или e-mail…" autocomplete="off">
+    </div>
+    <button type="button" id="intro-toggle" class="btn btn-secondary intro-toggle" aria-expanded="false">
+      Шаблон письма
+    </button>
+  </header>
+
+  <main id="app" class="app"></main>
+
+  <aside id="intro-drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <h2>Шаблон письма со сверкой</h2>
+      <button type="button" id="intro-close" class="drawer-close" aria-label="Закрыть">×</button>
+    </div>
+    <p class="page-sub">
+      Текст подставляется в письмо перед строкой «ID сверки: …» и таблицей подтверждений.
+    </p>
+    <form id="intro-form">
+      <textarea id="intro_text" rows="10" placeholder="Текст письма…"></textarea>
+      <div class="actions" style="margin-top:.75rem">
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+        <button type="button" class="btn btn-secondary" id="intro-default">По умолчанию</button>
+      </div>
+    </form>
+  </aside>
+  <div id="intro-overlay" class="drawer-overlay" hidden></div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_PY="$ROOT/.venv/bin/python"
+if [[ ! -x "$VENV_PY" ]]; then
+  if ! command -v python3.14 >/dev/null 2>&1; then
+    echo "Нужен Python 3.14: brew install python@3.14" >&2
+    exit 1
+  fi
+  python3.14 -m venv "$ROOT/.venv"
+fi
+exec "$VENV_PY" "$ROOT/gmail_parse_sent.py" "$@"

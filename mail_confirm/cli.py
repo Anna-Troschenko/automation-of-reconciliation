@@ -10,9 +10,13 @@ from typing import Optional
 from mail_confirm.db import (
     daemon_imap_idle_chunk_sec,
     daemon_poll_sec,
+    list_recipient_triggers,
     open_database,
     set_recipient_interval,
 )
+from mail_confirm.triggers import _parse_config
+from mail_confirm.smtp_ops import smtp_config_from_env
+from mail_confirm.web_app import serve_web_ui
 from mail_confirm.imap_client import (
     imap_connect,
     idle_wait_sent_folder,
@@ -28,14 +32,14 @@ from mail_confirm.smtp_ops import (
 )
 from mail_confirm.utils import env_first
 
-
 def needs_imap(args: argparse.Namespace) -> bool:
+    if args.web_ui:
+        return False
     if args.daemon or args.list_folders:
         return True
     if args.set_recipient_interval or args.list_recipient_settings:
         return False
     return True
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -155,9 +159,15 @@ def main() -> int:
     parser.add_argument(
         "--imap-idle-chunk-sec",
         type=float,
-        default=float(env_first("IMAP_IDLE_CHUNK_SEC", default="1500") or "1500"),
-        help="Сколько секунд держать одну сессию IDLE до продления (избегать обрыва ~30 мин сервером)",
+        default=float(env_first("IMAP_IDLE_CHUNK_SEC", default="840") or "840"),
+        help=(
+            "Сколько секунд держать одну сессию IMAP IDLE до её перезахода. "
+            "По умолчанию 840s (14 мин) — заведомо меньше серверного лимита Gmail (~29 мин) "
+            "и типичных NAT/файрвол-таймаутов, иначе соединение «тихо» умирает и новые письма "
+            "перестают приходить."
+        ),
     )
+
     parser.add_argument(
         "--use-uid-cursor",
         action="store_true",
@@ -195,6 +205,22 @@ def main() -> int:
         action="store_true",
         help="Не отправлять сводки по SMTP (только запись в БД)",
     )
+    parser.add_argument(
+        "--web-ui",
+        action="store_true",
+        help="Веб-интерфейс настройки триггеров (без IMAP)",
+    )
+    parser.add_argument(
+        "--web-host",
+        default=env_first("WEB_HOST", default="127.0.0.1"),
+        help="Адрес веб-интерфейса (по умолчанию только локально)",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=int(env_first("WEB_PORT", default="8765") or "8765"),
+        help="Порт веб-интерфейса",
+    )
     args = parser.parse_args()
 
     if args.use_ssl is None:
@@ -207,6 +233,24 @@ def main() -> int:
     conn: Optional[sqlite3.Connection] = None
     mail: Optional[imaplib.IMAP4] = None
     try:
+        if args.web_ui:
+            smtp_host = args.smtp_host or default_smtp_host(args.host or "")
+            smtp_cfg = smtp_config_from_env(
+                smtp_host=smtp_host if args.host else args.smtp_host,
+                smtp_port=args.smtp_port,
+                smtp_user=args.smtp_user or args.user,
+                smtp_password=args.smtp_password or args.password,
+                mail_from=args.mail_from or args.user,
+                imap_host=args.host,
+            )
+            serve_web_ui(
+                db_path=args.db,
+                host=args.web_host,
+                port=args.web_port,
+                smtp=smtp_cfg,
+            )
+            return 0
+
         if args.set_recipient_interval or args.list_recipient_settings:
             conn = open_database(args.db)
             for pair in args.set_recipient_interval:
@@ -214,12 +258,11 @@ def main() -> int:
                 set_recipient_interval(conn, em, int(sec_s))
                 print(f"OK: {em.lower()} → {sec_s} сек", file=sys.stderr)
             if args.list_recipient_settings:
-                for row in conn.execute(
-                    "SELECT email, interval_seconds, last_digest_sent_at FROM recipient_digest "
-                    "ORDER BY email COLLATE NOCASE"
-                ):
+                for row in list_recipient_triggers(conn):
+                    tt = str(row["trigger_type"] or "interval")
+                    cfg = _parse_config(row["trigger_config"], int(row["interval_seconds"]), tt)
                     print(
-                        f"{row['email']}\tinterval={row['interval_seconds']}s\t"
+                        f"{row['email']}\ttype={tt}\tconfig={cfg}\t"
                         f"last_digest={row['last_digest_sent_at']}"
                     )
             if not needs_imap(args):
@@ -283,24 +326,6 @@ def main() -> int:
                         )
                         select_folder(mail, args.sent_folder)
                         idle_ok = bool(args.imap_idle) and imap_supports_idle(mail)
-                        if idle_ok:
-                            _ic = daemon_imap_idle_chunk_sec(
-                                conn,
-                                imap_cap=args.imap_idle_chunk_sec,
-                                digest_default=args.digest_interval_sec,
-                            )
-                            print(
-                                f"Демон: IMAP IDLE (до {_ic:.0f}s за цикл при неотпр. сводках) + UID-курсор; "
-                                f"SMTP {smtp_host}:{args.smtp_port}; деф. интервал {args.digest_interval_sec}s",
-                                file=sys.stderr,
-                            )
-                        else:
-                            print(
-                                f"Демон: опрос каждые {poll_sec}s (IDLE "
-                                f"{'выключён' if not args.imap_idle else 'недоступен'}"
-                                f"), UID-курсор; SMTP {smtp_host}:{args.smtp_port}",
-                                file=sys.stderr,
-                            )
 
                         def scan_and_digest() -> None:
                             ins, skip, _ = scan_sent_and_store(
@@ -313,11 +338,12 @@ def main() -> int:
                                 dry_run=False,
                                 default_digest_interval=args.digest_interval_sec,
                             )
-                            if ins or skip:
+                            if ins:
                                 print(
                                     f"IMAP: добавлено {ins}, пропущено {skip}",
                                     file=sys.stderr,
                                 )
+
                             if not args.no_smtp_digest:
                                 try:
                                     n = send_due_digests(
@@ -357,6 +383,13 @@ def main() -> int:
                                     )
                                 elif wake == "exists":
                                     print("IMAP: EXISTS — новое письмо в папке, синхронизация.", file=sys.stderr)
+
+                                try:
+                                    mail.noop()
+                                except (imaplib.IMAP4.error, OSError) as e:
+                                    raise imaplib.IMAP4.error(
+                                        f"IMAP NOOP после IDLE: {e}"
+                                    )
                                 scan_and_digest()
                             else:
                                 time.sleep(
@@ -364,7 +397,15 @@ def main() -> int:
                                         conn, poll_cap=poll_sec, digest_default=args.digest_interval_sec
                                     )
                                 )
+
+                                try:
+                                    mail.noop()
+                                except (imaplib.IMAP4.error, OSError) as e:
+                                    raise imaplib.IMAP4.error(
+                                        f"IMAP NOOP: {e}"
+                                    )
                                 scan_and_digest()
+
                     except (imaplib.IMAP4.error, OSError) as e:
                         print(f"IMAP: соединение: {e}, переподключение через {poll_sec}s", file=sys.stderr)
                         time.sleep(poll_sec)
