@@ -76,9 +76,18 @@ function formatDt(s) {
 
 function parseRoute() {
   const h = location.hash.slice(1) || "/";
+  const mr = h.match(/^\/reconciliation\/(\d+)$/);
+  if (mr) return { view: "reconciliation", id: Number(mr[1]) };
   const m = h.match(/^\/company\/(.+)$/);
   if (m) return { view: "company", email: decodeURIComponent(m[1]) };
   return { view: "home" };
+}
+
+function formatEventDate(s) {
+  if (!s) return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return `${m[3]}.${m[2]}.${m[1]}`;
+  return s;
 }
 
 function navigate(hash) {
@@ -321,7 +330,7 @@ async function renderCompany(email) {
           const iterHint = pending > 0 && sentIters > 0 ? " (готовится дополнение)" : "";
           const iterCell = `#${iter}`;
           return `<tr>
-            <td><strong>#${r.id}</strong>${open ? ' <span class="recon-open">открыта</span>' : ""}</td>
+            <td><a href="#/reconciliation/${r.id}"><strong>#${r.id}</strong></a>${open ? ' <span class="recon-open">открыта</span>' : ""}</td>
             <td title="Отправлений: ${sentIters}${iterHint}">${iterCell}</td>
             <td>${formatDt(r.started_at)}</td>
             <td>${formatDt(r.sent_at)}</td>
@@ -358,11 +367,90 @@ async function renderCompany(email) {
   });
 }
 
+async function renderReconciliation(id) {
+  const data = await api(`/api/reconciliations/${id}/rows`);
+  const rows = Array.isArray(data.rows) ? data.rows : [];
+  const open = !data.sent_at;
+  const pending = rows.filter((r) => !r.digest_sent_at).length;
+  const canSend = open || pending > 0;
+  const email = data.recipient_email || "";
+  const backHref = email ? `#/company/${encodeURIComponent(email)}` : "#/";
+  const backTitle = email ? `← ${esc(email)}` : "← Компании";
+
+  app.innerHTML = `
+    <nav class="breadcrumb"><a href="${backHref}">${backTitle}</a></nav>
+    <h1 class="page-title">Сверка #${data.id}${open ? ' <span class="recon-open">открыта</span>' : ""}</h1>
+    <p class="page-sub">
+      Получатель: <strong>${esc(email)}</strong> ·
+      начало: ${esc(formatDt(data.started_at))} ·
+      отправлена: ${esc(formatDt(data.sent_at))}
+    </p>
+
+    <div class="card">
+      <div class="actions" style="margin-bottom:.75rem">
+        ${
+          canSend
+            ? `<button type="button" class="btn btn-primary" id="recon-send">
+                 Отправить${!open && pending > 0 ? ` дополнение (+${pending})` : ""}
+               </button>`
+            : '<span class="hint">Сверка уже отправлена, новых строк нет.</span>'
+        }
+        <span class="hint">Всего строк: ${rows.length}${pending ? ` · ожидают отправки: ${pending}` : ""}</span>
+      </div>
+
+      ${
+        rows.length
+          ? `<table class="recon-table">
+              <thead>
+                <tr>
+                  <th>ID явления</th>
+                  <th>Сопоставленный</th>
+                  <th>Дата явления</th>
+                  <th>Статус</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows
+                  .map((r) => {
+                    const isSent = !!r.digest_sent_at;
+                    const status = isSent
+                      ? `<span class="pill pill-active" title="${esc(formatDt(r.digest_sent_at))}">отправлено</span>`
+                      : '<span class="pill pill-paused">ожидание</span>';
+                    return `<tr>
+                      <td>${esc(r.id_yavleniya)}</td>
+                      <td>${esc(r.id_sopostavlennyi)}</td>
+                      <td>${esc(formatEventDate(r.event_date))}</td>
+                      <td>${status}</td>
+                    </tr>`;
+                  })
+                  .join("")}
+              </tbody>
+            </table>`
+          : '<div class="empty">В сверке пока нет строк.</div>'
+      }
+    </div>`;
+
+  const sendBtn = app.querySelector("#recon-send");
+  if (sendBtn) {
+    sendBtn.addEventListener("click", async () => {
+      sendBtn.disabled = true;
+      try {
+        await sendReconciliation(id);
+        render();
+      } catch (e) {
+        showToast(e.message, true);
+        sendBtn.disabled = false;
+      }
+    });
+  }
+}
+
 async function render() {
   const route = parseRoute();
   const q = globalSearch.value.trim();
   try {
     if (route.view === "company") await renderCompany(route.email);
+    else if (route.view === "reconciliation") await renderReconciliation(route.id);
     else await renderHome(q);
   } catch (e) {
     app.innerHTML = `<div class="card empty">${esc(e.message)}</div>`;

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход — Сверки</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-theme="sky" class="login-body">
+  <main class="login-card" role="main">
+    <div class="login-brand">
+      <p class="login-sub">Войдите, чтобы управлять компаниями и отправлять сверки</p>
+    </div>
+
+    <form id="login-form" autocomplete="on" novalidate>
+      <label for="login-user">Логин</label>
+      <input id="login-user" name="user" type="text" autocomplete="username"
+             autocapitalize="off" autocorrect="off" spellcheck="false"
+             required autofocus>
+
+      <label for="login-pass">Пароль</label>
+      <input id="login-pass" name="password" type="password"
+             autocomplete="current-password" required>
+
+      <div id="login-error" class="login-error" hidden></div>
+
+      <button type="submit" class="btn btn-primary login-submit">Войти</button>
+    </form>
+
+  </main>
+
+  <script>
+    (function () {
+      const form = document.getElementById("login-form");
+      const errBox = document.getElementById("login-error");
+      const submit = form.querySelector("button[type=submit]");
+      const params = new URLSearchParams(location.search);
+      const next = params.get("next") || "/";
+
+      function showError(msg) {
+        errBox.textContent = msg;
+        errBox.hidden = false;
+      }
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        errBox.hidden = true;
+        submit.disabled = true;
+        const user = document.getElementById("login-user").value.trim();
+        const password = document.getElementById("login-pass").value;
+        try {
+          const res = await fetch("/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ user, password }),
+            credentials: "same-origin",
+          });
+          if (res.ok) {
+            const target = next.startsWith("/") && !next.startsWith("//") ? next : "/";
+            location.replace(target);
+            return;
+          }
+          let msg = "Неверный логин или пароль";
+          try {
+            const data = await res.json();
+            if (data && data.error) msg = data.error;
+          } catch (_) {}
+          showError(msg);
+          document.getElementById("login-pass").focus();
+          document.getElementById("login-pass").select();
+        } catch (err) {
+          showError("Сеть недоступна, попробуйте ещё раз");
+        } finally {
+          submit.disabled = false;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

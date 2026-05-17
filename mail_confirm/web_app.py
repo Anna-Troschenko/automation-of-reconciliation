@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import hmac
+import http.cookies
 import json
 import re
+import secrets
 import sqlite3
 import sys
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from mail_confirm.db import (
     DEFAULT_DIGEST_INTRO_TEXT,
@@ -32,6 +36,7 @@ from mail_confirm.db import (
 
 
 from mail_confirm.reconciliations import (
+    confirmation_rows_for_reconciliation,
     get_reconciliation,
     list_reconciliations_for_recipient,
 )
@@ -43,7 +48,15 @@ from mail_confirm.triggers import TRIGGER_KEYWORD, VALID_TRIGGER_TYPES, _parse_c
 _STATIC = Path(__file__).resolve().parent / "web_static"
 _EMAIL_PATH = re.compile(r"^/api/companies/([^/]+)(?:/(reconciliations))?$")
 _RECON_SEND = re.compile(r"^/api/reconciliations/(\d+)/send$")
+_RECON_ROWS = re.compile(r"^/api/reconciliations/(\d+)/rows$")
 _RECON_GET = re.compile(r"^/api/reconciliations/(\d+)$")
+
+_UNAUTHENTICATED_PATHS: frozenset[str] = frozenset(
+    {"/metrics", "/api/health", "/login", "/logout"}
+)
+
+_SESSION_COOKIE = "mc_session"
+_SESSION_TTL_SEC = 7 * 24 * 3600
 
 def _row_to_api(row: sqlite3.Row) -> dict[str, Any]:
     tt = str(row["trigger_type"] or "interval")
@@ -129,6 +142,8 @@ def _metrics_endpoint(path: str) -> str:
         return "/api/companies/:email"
     if path.startswith("/api/reconciliations/") and path.endswith("/send"):
         return "/api/reconciliations/:id/send"
+    if path.startswith("/api/reconciliations/") and path.endswith("/rows"):
+        return "/api/reconciliations/:id/rows"
     if path.startswith("/api/reconciliations/"):
         return "/api/reconciliations/:id"
     if path == "/metrics":
@@ -138,8 +153,53 @@ def _metrics_endpoint(path: str) -> str:
     return "other"
 
 
-def make_handler(db_path: str, smtp: Optional[SmtpConfig]):
+def _row_to_recon_row_api(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id_yavleniya": str(row["id_yavleniya"] or ""),
+        "id_sopostavlennyi": str(row["id_sopostavlennyi"] or ""),
+        "event_date": row["event_date"],
+        "sent_at": row["sent_at"],
+        "inserted_at": row["inserted_at"],
+        "digest_sent_at": row["digest_sent_at"],
+    }
+
+
+
+def make_handler(
+    db_path: str,
+    smtp: Optional[SmtpConfig],
+    *,
+    auth_user: Optional[str] = None,
+    auth_password: Optional[str] = None,
+):
     install_db_collector(db_path)
+
+    auth_enabled = bool(auth_user and auth_password)
+    expected_user = (auth_user or "").encode("utf-8")
+    expected_password = (auth_password or "").encode("utf-8")
+
+    sessions: dict[str, float] = {}
+    sessions_lock = threading.Lock()
+
+    def _new_session() -> str:
+        token = secrets.token_urlsafe(32)
+        with sessions_lock:
+            sessions[token] = time.time() + _SESSION_TTL_SEC
+        return token
+
+    def _drop_session(token: str) -> None:
+        with sessions_lock:
+            sessions.pop(token, None)
+
+    def _valid_session(token: str) -> bool:
+        with sessions_lock:
+            exp = sessions.get(token)
+            if exp is None:
+                return False
+            if exp < time.time():
+                sessions.pop(token, None)
+                return False
+            return True
 
     class Handler(BaseHTTPRequestHandler):
 
@@ -157,6 +217,119 @@ def make_handler(db_path: str, smtp: Optional[SmtpConfig]):
             except Exception:
                 pass
             super().send_response(code, message)
+
+        def _session_token(self) -> Optional[str]:
+            raw = self.headers.get("Cookie", "")
+            if not raw:
+                return None
+            try:
+                jar = http.cookies.SimpleCookie()
+                jar.load(raw)
+            except http.cookies.CookieError:
+                return None
+            morsel = jar.get(_SESSION_COOKIE)
+            return morsel.value if morsel else None
+
+        def _is_authenticated(self) -> bool:
+            tok = self._session_token()
+            return bool(tok) and _valid_session(tok)
+
+        def _check_auth(self) -> bool:
+            """Whitelist + проверка cookie. Для HTML-запросов от браузера —
+            редирект на красивую страницу /login?next=…, для API-запросов
+            (Accept: application/json) — JSON 401, чтобы фронт мог обработать."""
+            if not auth_enabled:
+                return True
+            path = urlparse(self.path).path
+            if path in _UNAUTHENTICATED_PATHS or path.startswith("/static/"):
+                return True
+            if self._is_authenticated():
+                return True
+
+            wants_json = (
+                path.startswith("/api/")
+                or "application/json" in self.headers.get("Accept", "")
+            )
+            if wants_json:
+                self._json(HTTPStatus.UNAUTHORIZED, {"error": "Требуется вход"})
+                return False
+
+            next_url = self.path or "/"
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", f"/login?next={quote(next_url, safe='/')}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return False
+
+        def _set_session_cookie(self, token: str) -> None:
+            parts = [
+                f"{_SESSION_COOKIE}={token}",
+                "Path=/",
+                "HttpOnly",
+                "SameSite=Lax",
+                f"Max-Age={_SESSION_TTL_SEC}",
+            ]
+            self.send_header("Set-Cookie", "; ".join(parts))
+
+        def _clear_session_cookie(self) -> None:
+            self.send_header(
+                "Set-Cookie",
+                f"{_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+            )
+
+        def _handle_login_get(self) -> None:
+            if self._is_authenticated():
+                self.send_response(HTTPStatus.SEE_OTHER)
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self._file(_STATIC / "login.html", "text/html; charset=utf-8")
+
+        def _handle_login_post(self) -> None:
+            try:
+                data = self._read_json_body()
+            except ValueError:
+                return self._json(HTTPStatus.BAD_REQUEST, {"error": "Неверные данные"})
+            user = str(data.get("user", "")).encode("utf-8")
+            password = str(data.get("password", "")).encode("utf-8")
+            ok_user = hmac.compare_digest(user, expected_user)
+            ok_pass = hmac.compare_digest(password, expected_password)
+            if not (ok_user and ok_pass):
+                return self._json(
+                    HTTPStatus.UNAUTHORIZED, {"error": "Неверный логин или пароль"}
+                )
+            token = _new_session()
+            body = json.dumps({"ok": True}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self._set_session_cookie(token)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _handle_logout(self) -> None:
+            tok = self._session_token()
+            if tok:
+                _drop_session(tok)
+            wants_json = (
+                self.command == "POST"
+                or "application/json" in self.headers.get("Accept", "")
+            )
+            if wants_json:
+                body = json.dumps({"ok": True}).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self._clear_session_cookie()
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self._clear_session_cookie()
+            self.send_header("Location", "/login")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def _json(self, status: int, payload: Any) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -180,12 +353,18 @@ def make_handler(db_path: str, smtp: Optional[SmtpConfig]):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
-            if path in ("/", "/index.html"):
-                return self._file(_STATIC / "index.html", "text/html; charset=utf-8")
+            if path == "/login":
+                return self._handle_login_get()
+            if path == "/logout":
+                return self._handle_logout()
             if path == "/static/style.css":
                 return self._file(_STATIC / "style.css", "text/css; charset=utf-8")
             if path == "/static/app.js":
                 return self._file(_STATIC / "app.js", "application/javascript; charset=utf-8")
+            if not self._check_auth():
+                return
+            if path in ("/", "/index.html"):
+                return self._file(_STATIC / "index.html", "text/html; charset=utf-8")
             if path == "/metrics":
                 body = METRICS_REGISTRY.render()
                 self.send_response(HTTPStatus.OK)
@@ -210,10 +389,27 @@ def make_handler(db_path: str, smtp: Optional[SmtpConfig]):
             if m_recon:
                 return self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
 
+            m_recon_rows = _RECON_ROWS.match(path)
             m_recon_get = _RECON_GET.match(path)
             m = _EMAIL_PATH.match(path)
             conn = open_database_fast(db_path)
             try:
+                if m_recon_rows:
+                    rid = int(m_recon_rows.group(1))
+                    row = get_reconciliation(conn, rid)
+                    if row is None:
+                        return self._json(HTTPStatus.NOT_FOUND, {"error": "Сверка не найдена"})
+                    rows = confirmation_rows_for_reconciliation(conn, rid)
+                    return self._json(
+                        HTTPStatus.OK,
+                        {
+                            "id": rid,
+                            "recipient_email": str(row["recipient_email"]),
+                            "started_at": row["started_at"],
+                            "sent_at": row["sent_at"],
+                            "rows": [_row_to_recon_row_api(r) for r in rows],
+                        },
+                    )
                 if path == "/api/settings/intro_text":
                     return self._json(
                         HTTPStatus.OK,
@@ -273,6 +469,12 @@ def make_handler(db_path: str, smtp: Optional[SmtpConfig]):
 
         def do_POST(self) -> None:
             path = urlparse(self.path).path
+            if path == "/login":
+                return self._handle_login_post()
+            if path == "/logout":
+                return self._handle_logout()
+            if not self._check_auth():
+                return
             m_send = _RECON_SEND.match(path)
             if m_send:
                 rid = int(m_send.group(1))
@@ -473,12 +675,32 @@ def serve_web_ui(
     host: str,
     port: int,
     smtp: Optional[SmtpConfig] = None,
+    auth_user: Optional[str] = None,
+    auth_password: Optional[str] = None,
 ) -> None:
 
     open_database(db_path).close()
-    server = ThreadingHTTPServer((host, port), make_handler(db_path, smtp))
-    mode = "SMTP из окружения" if smtp else "без SMTP (только очередь)"
-    print(f"Веб-интерфейс: http://{host}:{port}/  ({mode})", flush=True)
+    server = ThreadingHTTPServer(
+        (host, port),
+        make_handler(db_path, smtp, auth_user=auth_user, auth_password=auth_password),
+    )
+    mode_parts: list[str] = ["SMTP из окружения" if smtp else "без SMTP (только очередь)"]
+    if auth_user and auth_password:
+        mode_parts.append(f"вход как {auth_user!r}")
+    else:
+        mode_parts.append("без аутентификации")
+    print(
+        f"Веб-интерфейс: http://{host}:{port}/  ({', '.join(mode_parts)})",
+        flush=True,
+    )
+    if not (auth_user and auth_password) and host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"WEB: внимание — слушаем {host}:{port} без аутентификации. "
+            f"Задайте WEB_AUTH_USER / WEB_AUTH_PASSWORD (или флаги --web-auth-user/--web-auth-password), "
+            f"иначе любой, кто видит порт, может удалять компании и слать письма.",
+            file=sys.stderr,
+            flush=True,
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

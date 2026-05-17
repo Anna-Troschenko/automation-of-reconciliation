@@ -55,6 +55,7 @@ body {
 .search-wrap input,
 input[type="text"],
 input[type="email"],
+input[type="password"],
 input[type="number"],
 input[type="search"],
 select,
@@ -253,9 +254,103 @@ tr:last-child td { border-bottom: none; }
   color: var(--text-muted);
 }
 
-.recon-open { font-weight: 600; color: var(--warn); }
+.recon-open { font-weight: 600; color: var(--warn); margin-left: .25rem; }
 
-/* === Drawer: «Шаблон письма» === */
+td a, td a:visited { color: var(--primary); text-decoration: none; }
+td a:hover { text-decoration: underline; }
+
+.recon-table th, .recon-table td { vertical-align: top; }
+.recon-table td:first-child, .recon-table td:nth-child(2) {
+  font-variant-numeric: tabular-nums;
+}
+
+.login-body {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+  padding: 2rem 1.75rem 1.5rem;
+}
+
+.login-brand { text-align: center; margin-bottom: 1.5rem; }
+.login-brand h1 {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.login-sub {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.login-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary), #38bdf8);
+  color: #fff;
+  font-size: 1.6rem;
+  font-weight: 700;
+  box-shadow: 0 8px 20px rgba(2, 132, 199, 0.35);
+}
+
+#login-form label {
+  margin-top: 0.85rem;
+}
+
+#login-form input {
+  margin-top: 0.1rem;
+}
+
+.login-submit {
+  width: 100%;
+  margin-top: 1.25rem;
+  padding: 0.7rem 1rem;
+  font-size: 0.95rem;
+}
+
+.login-error {
+  margin-top: 0.85rem;
+  padding: 0.55rem 0.75rem;
+  background: #fef2f2;
+  color: var(--danger);
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  font-size: 0.85rem;
+}
+
+.login-foot {
+  margin: 1.25rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+.login-foot code {
+  background: var(--surface-hover);
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+}
+
+.btn-logout {
+  margin-left: 0.25rem;
+}
+
 .intro-toggle {
   margin-left: auto;
   white-space: nowrap;

@@ -173,11 +173,10 @@ def confirmation_lines_for_reconciliation(
 def confirmation_rows_for_reconciliation(
     conn: sqlite3.Connection, reconciliation_id: int
 ) -> list[sqlite3.Row]:
-    """Все строки сверки для построения HTML-таблицы.
-    Возвращает: id_yavleniya, id_sopostavlennyi, event_date, sent_at, inserted_at."""
     return conn.execute(
         """
-        SELECT id_yavleniya, id_sopostavlennyi, event_date, sent_at, inserted_at
+        SELECT id_yavleniya, id_sopostavlennyi, event_date,
+               sent_at, inserted_at, digest_sent_at
         FROM confirmations
         WHERE reconciliation_id = ? ORDER BY id
         """,

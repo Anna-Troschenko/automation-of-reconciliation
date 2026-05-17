@@ -222,6 +222,24 @@ def main() -> int:
         help="Порт веб-интерфейса",
     )
     parser.add_argument(
+        "--web-auth-user",
+        default=env_first("WEB_AUTH_USER"),
+        help=(
+            "Логин для Basic-auth веб-интерфейса. Если задан вместе с --web-auth-password, "
+            "все ручки (кроме /metrics и /api/health) потребуют HTTP Basic. "
+            "По умолчанию аутентификация выключена — для разработки локально."
+        ),
+    )
+    parser.add_argument(
+        "--web-auth-password",
+        default=env_first("WEB_AUTH_PASSWORD"),
+        help=(
+            "Пароль для Basic-auth веб-интерфейса (см. --web-auth-user). "
+            "Лучше задавать через переменную окружения WEB_AUTH_PASSWORD, "
+            "чтобы пароль не попадал в историю shell."
+        ),
+    )
+    parser.add_argument(
         "--metrics-host",
         default=env_first("METRICS_HOST", default="0.0.0.0"),
         help="Адрес, на котором --daemon отдаёт Prometheus-метрики (по умолчанию 0.0.0.0)",
@@ -259,6 +277,8 @@ def main() -> int:
                 host=args.web_host,
                 port=args.web_port,
                 smtp=smtp_cfg,
+                auth_user=args.web_auth_user,
+                auth_password=args.web_auth_password,
             )
             return 0
 
