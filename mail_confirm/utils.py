@@ -31,3 +31,18 @@ def parse_email_date_header(date_hdr: Optional[str]) -> Optional[datetime]:
         return dt.astimezone(timezone.utc)
     except (ValueError, TypeError, OverflowError):
         return None
+
+def parse_stored_sent_at(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    s = str(value).strip()
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        try:
+            y, mo, d = int(s[0:4]), int(s[5:7]), int(s[8:10])
+            return datetime(y, mo, d, tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    try:
+        return parse_sql_datetime(s).astimezone(timezone.utc)
+    except (ValueError, AttributeError):
+        return parse_email_date_header(s)

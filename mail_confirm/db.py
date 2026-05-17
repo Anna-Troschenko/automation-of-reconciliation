@@ -12,7 +12,7 @@ from mail_confirm.triggers import (
     interval_seconds_from_trigger,
     load_recipient_trigger,
 )
-from mail_confirm.utils import parse_email_date_header, parse_sql_datetime, utc_now_sql
+from mail_confirm.utils import parse_sql_datetime, parse_stored_sent_at, utc_now_sql
 
 RECIPIENT_STATUS_ACTIVE = "active"
 RECIPIENT_STATUS_PAUSED = "paused"
@@ -259,7 +259,7 @@ def confirmation_acceptable_for_recipient(
     cutoff = get_accumulation_cutoff(conn, email)
     if cutoff is None:
         return True
-    msg_dt = parse_email_date_header(date_hdr)
+    msg_dt = parse_stored_sent_at(date_hdr)
     if msg_dt is None:
         return False
     return msg_dt >= cutoff
@@ -285,11 +285,13 @@ def insert_confirmation_row(
     *,
     append_reconciliation_id: Optional[int] = None,
     event_date: Optional[str] = None,
+    received_date: Optional[str] = None,
 ) -> bool:
     em = normalize_recipient_email(recipient_email)
     if not em or not recipient_can_accumulate(conn, em):
         return False
-    if not confirmation_acceptable_for_recipient(conn, em, date_hdr):
+    sent_at = received_date if received_date else date_hdr
+    if not confirmation_acceptable_for_recipient(conn, em, sent_at):
         return False
     try:
         cur = conn.execute(
@@ -299,7 +301,7 @@ def insert_confirmation_row(
              event_date, recipient_email, digest_sent_at, reconciliation_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)
             """,
-            (dedupe, str(id_yav), str(id_sop), subj, date_hdr, event_date, em),
+            (dedupe, str(id_yav), str(id_sop), subj, sent_at, event_date, em),
         )
 
         conf_id = int(cur.lastrowid)
@@ -316,7 +318,7 @@ def insert_confirmation_row(
             rid = append_reconciliation_id
         if rid is None:
             rid = get_or_create_open_reconciliation(
-                conn, em, letter_sent_hdr=date_hdr
+                conn, em, letter_sent_hdr=sent_at
             )
         attach_confirmation_to_reconciliation(conn, conf_id, rid)
         conn.commit()

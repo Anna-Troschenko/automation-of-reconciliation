@@ -58,51 +58,47 @@ def get_text_body(msg: Message) -> str:
 
     return "\n".join(texts)
 
-def parse_confirmations(text: str) -> list[Tuple[str, str, Optional[str]]]:
-    """Найти все строки подтверждений в письме. Возвращает список кортежей
-    (id_yavleniya, id_sopostavlennyi, event_date_iso_or_None)."""
+ParsedEntry = Tuple[str, str, Optional[str], Optional[str]]
+
+def _parse_pattern_matches(
+    pattern: re.Pattern[str], text: str
+) -> list[ParsedEntry]:
     if not text:
         return []
-    out: list[Tuple[str, str, Optional[str]]] = []
-    seen: set[tuple[str, str, Optional[str]]] = set()
-    for m in CONFIRMATION_PATTERN.finditer(text.replace("\r\n", "\n")):
+    out: list[ParsedEntry] = []
+    seen: set[ParsedEntry] = set()
+    for m in pattern.finditer(text.replace("\r\n", "\n")):
         id_yav = m.group(1).strip()
         id_sop = m.group(2).strip()
-        raw_date = (m.group(3) or "").strip()
-        event_date = _normalize_dmy_to_iso(raw_date) if raw_date else None
-        key = (id_yav, id_sop, event_date)
+        raw_event = (m.group(3) or "").strip()
+        raw_received = (m.group(4) or "").strip()
+        event_date = _normalize_dmy_to_iso(raw_event) if raw_event else None
+        received_date = _normalize_dmy_to_iso(raw_received) if raw_received else None
+        key = (id_yav, id_sop, event_date, received_date)
         if key in seen:
             continue
         seen.add(key)
         out.append(key)
     return out
 
-def parse_confirmation(text: str) -> Optional[Tuple[str, str, Optional[str]]]:
+def parse_confirmations(text: str) -> list[ParsedEntry]:
+    """Найти все строки подтверждений в письме. Возвращает список кортежей
+    (id_yavleniya, id_sopostavlennyi, event_date_iso_or_None, received_date_iso_or_None)."""
+    return _parse_pattern_matches(CONFIRMATION_PATTERN, text)
+
+def parse_confirmation(text: str) -> Optional[ParsedEntry]:
     """Первое подтверждение из письма (back-compat). См. parse_confirmations."""
     items = parse_confirmations(text)
     return items[0] if items else None
 
-def parse_deletions(text: str) -> list[Tuple[str, str, Optional[str]]]:
+def parse_deletions(text: str) -> list[ParsedEntry]:
     """Найти все строки «Удаление нежелательного явления …» в письме.
 
-    Возвращает список кортежей `(id_yavleniya, id_sopostavlennyi, event_date_iso_or_None)`
-    — структура такая же, как у `parse_confirmations`, чтобы было удобно матчить
-    удаляемые строки против уже сохранённых в БД подтверждений."""
-    if not text:
-        return []
-    out: list[Tuple[str, str, Optional[str]]] = []
-    seen: set[tuple[str, str, Optional[str]]] = set()
-    for m in DELETION_PATTERN.finditer(text.replace("\r\n", "\n")):
-        id_yav = m.group(1).strip()
-        id_sop = m.group(2).strip()
-        raw_date = (m.group(3) or "").strip()
-        event_date = _normalize_dmy_to_iso(raw_date) if raw_date else None
-        key = (id_yav, id_sop, event_date)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(key)
-    return out
+    Возвращает список кортежей `(id_yavleniya, id_sopostavlennyi,
+    event_date_iso_or_None, received_date_iso_or_None)` — структура такая же,
+    как у `parse_confirmations`, чтобы было удобно матчить удаляемые строки
+    против уже сохранённых в БД подтверждений."""
+    return _parse_pattern_matches(DELETION_PATTERN, text)
 
 def has_end_of_reconciliation_marker(text: str) -> bool:
     """В конце письма стоит «Окончание редактирования сверки.» —
@@ -144,16 +140,53 @@ def format_confirmation_line(
     id_yav: str | int,
     id_sop: str | int,
     event_date: Optional[str] = None,
+    received_date: Optional[str] = None,
 ) -> str:
-    """Сформировать строку подтверждения. event_date — в ISO YYYY-MM-DD;
+    """Сформировать строку подтверждения. Даты — в ISO YYYY-MM-DD;
     в строку будет вписан формат ДД.ММ.ГГГГ."""
     base = (
         f"Добрый день! Подтверждаю нежелательное явление {id_yav}, "
         f"сопоставленный ID: {id_sop}"
     )
+    parts: list[str] = []
     if event_date:
-        return f"{base}. Дата явления: {_iso_to_dmy(event_date)}"
+        parts.append(f"Дата явления: {_iso_to_dmy(event_date)}")
+    if received_date:
+        parts.append(f"Дата получения: {_iso_to_dmy(received_date)}")
+    if parts:
+        return f"{base}. " + ". ".join(parts) + "."
     return base
+
+def format_deletion_line(
+    id_yav: str | int,
+    id_sop: str | int,
+    event_date: Optional[str] = None,
+    received_date: Optional[str] = None,
+) -> str:
+    base = (
+        f"Добрый день! Удаление нежелательного явления {id_yav}, "
+        f"сопоставленный ID: {id_sop}"
+    )
+    parts: list[str] = []
+    if event_date:
+        parts.append(f"Дата явления: {_iso_to_dmy(event_date)}")
+    if received_date:
+        parts.append(f"Дата получения: {_iso_to_dmy(received_date)}")
+    if parts:
+        return f"{base}. " + ". ".join(parts) + "."
+    return base
+
+def sent_at_to_iso_date(value: Optional[str]) -> Optional[str]:
+    """Привести `sent_at` из БД к ISO `YYYY-MM-DD` для форматирования строк."""
+    if not value:
+        return None
+    s = str(value).strip()
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    from mail_confirm.utils import parse_stored_sent_at
+
+    dt = parse_stored_sent_at(s)
+    return dt.strftime("%Y-%m-%d") if dt else None
 
 def _iso_to_dmy(iso: str) -> str:
     try:

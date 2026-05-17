@@ -3,8 +3,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Optional
 
-from mail_confirm.email_parse import format_confirmation_line
-from mail_confirm.utils import parse_email_date_header, utc_now_sql
+from mail_confirm.email_parse import format_confirmation_line, sent_at_to_iso_date
+from mail_confirm.utils import parse_stored_sent_at, utc_now_sql
 
 def get_open_reconciliation_id(conn: sqlite3.Connection, recipient_email: str) -> Optional[int]:
     from mail_confirm.db import normalize_recipient_email
@@ -45,7 +45,7 @@ def get_or_create_open_reconciliation(
     rid = get_open_reconciliation_id(conn, em)
     letter_ts = utc_now_sql()
     if letter_sent_hdr:
-        dt = parse_email_date_header(letter_sent_hdr)
+        dt = parse_stored_sent_at(letter_sent_hdr)
         if dt is not None:
             letter_ts = dt.astimezone(__import__("datetime").timezone.utc).strftime(
                 "%Y-%m-%d %H:%M:%S"
@@ -166,6 +166,7 @@ def confirmation_lines_for_reconciliation(
             str(r["id_yavleniya"]),
             str(r["id_sopostavlennyi"]),
             (str(r["event_date"]) if r["event_date"] else None),
+            sent_at_to_iso_date(str(r["sent_at"]) if r["sent_at"] else None),
         )
         for r in rows
     ]
@@ -186,26 +187,29 @@ def confirmation_rows_for_reconciliation(
 def delete_pending_from_reconciliation(
     conn: sqlite3.Connection,
     reconciliation_id: int,
-    deletions: list[tuple[str, str, Optional[str]]],
+    deletions: list[tuple[str, str, Optional[str], Optional[str]]],
 ) -> int:
 
     if not deletions:
         return 0
 
     total_removed = 0
-    for id_yav, id_sop, event_date in deletions:
+    for id_yav, id_sop, event_date, received_date in deletions:
         params: list[object] = [reconciliation_id, str(id_yav), str(id_sop)]
-        where_date = ""
+        where_extra = ""
         if event_date:
-            where_date = " AND event_date = ?"
+            where_extra += " AND event_date = ?"
             params.append(event_date)
+        if received_date:
+            where_extra += " AND sent_at = ?"
+            params.append(received_date)
         cur = conn.execute(
             f"""
             DELETE FROM confirmations
             WHERE reconciliation_id = ?
               AND digest_sent_at IS NULL
               AND id_yavleniya = ?
-              AND id_sopostavlennyi = ?{where_date}
+              AND id_sopostavlennyi = ?{where_extra}
             """,
             params,
         )

@@ -18,6 +18,7 @@ from mail_confirm.db import (
 from mail_confirm.email_parse import (
     decode_mime_header,
     format_confirmation_line,
+    format_deletion_line,
     get_text_body,
     has_end_of_reconciliation_marker,
     is_outbound_digest_email,
@@ -101,27 +102,31 @@ def scan_sent_and_store(
         end_marker = has_end_of_reconciliation_marker(body)
 
         if stdout_only:
-            for id_yav, id_sop, event_date in confirmations:
-                print(format_confirmation_line(id_yav, id_sop, event_date))
-            for id_yav, id_sop, event_date in deletions:
-                date_info = f". Дата явления: {event_date}" if event_date else ""
-                print(
-                    f"Удаление нежелательного явления {id_yav}, "
-                    f"сопоставленный ID: {id_sop}{date_info}"
-                )
+            for id_yav, id_sop, event_date, received_date in confirmations:
+                print(format_confirmation_line(id_yav, id_sop, event_date, received_date))
+            for id_yav, id_sop, event_date, received_date in deletions:
+                print(format_deletion_line(id_yav, id_sop, event_date, received_date))
             continue
 
         if dry_run:
             extra = f" | append→#{append_rid}" if append_rid else ""
             end_info = " | END" if end_marker else ""
-            for id_yav, id_sop, event_date in confirmations:
-                date_info = f" | дата явления={event_date}" if event_date else ""
+            for id_yav, id_sop, event_date, received_date in confirmations:
+                date_info = ""
+                if event_date:
+                    date_info += f" | дата явления={event_date}"
+                if received_date:
+                    date_info += f" | дата получения={received_date}"
                 print(
                     f"Найдено: явление={id_yav}, сопоставленный={id_sop}{date_info} | "
                     f"To={recipient!r} | {subj[:60]!r}{extra}{end_info}"
                 )
-            for id_yav, id_sop, event_date in deletions:
-                date_info = f" | дата явления={event_date}" if event_date else ""
+            for id_yav, id_sop, event_date, received_date in deletions:
+                date_info = ""
+                if event_date:
+                    date_info += f" | дата явления={event_date}"
+                if received_date:
+                    date_info += f" | дата получения={received_date}"
                 print(
                     f"Удаление: явление={id_yav}, сопоставленный={id_sop}{date_info} | "
                     f"To={recipient!r} | {subj[:60]!r}{extra}{end_info}"
@@ -163,16 +168,6 @@ def scan_sent_and_store(
                 skipped += len(confirmations)
                 CONFIRMATIONS_SKIPPED.labels(reason="paused").inc(len(confirmations))
                 continue
-            if not confirmation_acceptable_for_recipient(conn, recipient, date_hdr):
-                if recipient not in warned_pause_backlog:
-                    print(
-                        f"IMAP: пропуск письма до возобновления накопления для {recipient}",
-                        file=sys.stderr,
-                    )
-                    warned_pause_backlog.add(recipient)
-                skipped += len(confirmations)
-                CONFIRMATIONS_SKIPPED.labels(reason="pause_backlog").inc(len(confirmations))
-                continue
             if append_rid is not None:
                 from mail_confirm.reconciliations import reconciliation_belongs_to
 
@@ -185,7 +180,19 @@ def scan_sent_and_store(
                     append_rid = None
 
             inserted_in_msg = 0
-            for idx, (id_yav, id_sop, event_date) in enumerate(confirmations):
+            for idx, (id_yav, id_sop, event_date, received_date) in enumerate(confirmations):
+                effective_sent = received_date if received_date else date_hdr
+                if not confirmation_acceptable_for_recipient(conn, recipient, effective_sent):
+                    if recipient not in warned_pause_backlog:
+                        print(
+                            f"IMAP: пропуск подтверждения до возобновления накопления "
+                            f"для {recipient}",
+                            file=sys.stderr,
+                        )
+                        warned_pause_backlog.add(recipient)
+                    skipped += 1
+                    CONFIRMATIONS_SKIPPED.labels(reason="pause_backlog").inc()
+                    continue
                 row_key = dedupe_base if idx == 0 else f"{dedupe_base}#part{idx}"
                 if insert_confirmation_row(
                     conn,
@@ -197,6 +204,7 @@ def scan_sent_and_store(
                     recipient,
                     append_reconciliation_id=append_rid,
                     event_date=event_date,
+                    received_date=received_date,
                 ):
                     inserted += 1
                     inserted_in_msg += 1

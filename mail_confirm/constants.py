@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import re
 
+_DATE_FIELDS = (
+    r"(?:\s*\.?\s*Дата\s+явления\s*:\s*(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}))?"
+    r"(?:\s*\.?\s*Дата\s+получения\s*:\s*(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}))?"
+)
+
 CONFIRMATION_PATTERN = re.compile(
     r"Подтверждаю\s+нежелательное\s+явление\s+([A-Za-zА-Яа-я0-9_\-]+)\s*,\s*"
     r"сопоставленный\s+ID\s*:\s*([A-Za-zА-Яа-я0-9_\-]+)"
-    r"(?:\s*\.?\s*Дата\s+явления\s*:\s*(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}))?",
+    + _DATE_FIELDS,
     re.IGNORECASE | re.DOTALL,
 )
 
 DELETION_PATTERN = re.compile(
     r"Удаление\s+нежелательного\s+явления\s+([A-Za-zА-Яа-я0-9_\-]+)\s*,\s*"
     r"сопоставленный\s+ID\s*:\s*([A-Za-zА-Яа-я0-9_\-]+)"
-    r"(?:\s*\.?\s*Дата\s+явления\s*:\s*(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}))?",
+    + _DATE_FIELDS,
     re.IGNORECASE | re.DOTALL,
 )
 
