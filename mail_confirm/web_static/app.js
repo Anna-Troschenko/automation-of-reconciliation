@@ -38,9 +38,27 @@ async function api(path, opts = {}) {
   return data;
 }
 
+function secondsToDays(sec) {
+  const n = Number(sec) || 0;
+  if (n <= 0) return 1;
+  return Math.max(1, Math.round(n / 86400));
+}
+
+function pluralDays(n) {
+  const abs = Math.abs(n) % 100;
+  const last = abs % 10;
+  if (abs > 10 && abs < 20) return "дней";
+  if (last === 1) return "день";
+  if (last >= 2 && last <= 4) return "дня";
+  return "дней";
+}
+
 function describeTrigger(r) {
   const c = r.trigger_config || {};
-  if (r.trigger_type === "interval") return (c.interval_seconds || r.interval_seconds) + " сек";
+  if (r.trigger_type === "interval") {
+    const days = secondsToDays(c.interval_seconds || r.interval_seconds);
+    return `${days} ${pluralDays(days)}`;
+  }
   if (r.trigger_type === "schedule") {
     return `${c.day_of_month || 1}-е, ${String(c.hour || 0).padStart(2, "0")}:${String(c.minute || 0).padStart(2, "0")} (${c.timezone || "Europe/Moscow"})`;
   }
@@ -98,7 +116,8 @@ function bindTriggerFields(root, profile) {
     typeSel.value = profile.trigger_type;
     const c = profile.trigger_config || {};
     if (profile.trigger_type === "interval") {
-      root.querySelector("#interval_seconds").value = c.interval_seconds || profile.interval_seconds || 300;
+      const sec = c.interval_seconds || profile.interval_seconds || 86400;
+      root.querySelector("#interval_days").value = secondsToDays(sec);
     }
     if (profile.trigger_type === "schedule") {
       root.querySelector("#day_of_month").value = c.day_of_month ?? 5;
@@ -116,7 +135,8 @@ function buildPayload(root, email) {
   const trigger_type = root.querySelector("#trigger_type").value;
   let trigger_config = {};
   if (trigger_type === "interval") {
-    trigger_config = { interval_seconds: +root.querySelector("#interval_seconds").value };
+    const days = Math.max(1, +root.querySelector("#interval_days").value || 1);
+    trigger_config = { interval_seconds: days * 86400 };
   } else if (trigger_type === "schedule") {
     trigger_config = {
       day_of_month: +root.querySelector("#day_of_month").value,
@@ -190,7 +210,7 @@ function triggerFormHtml() {
         </select>
       </div>
     </div>
-    <div id="f_interval" class="fields"><label>Интервал (сек)</label><input id="interval_seconds" type="number" min="30" value="300"></div>
+    <div id="f_interval" class="fields"><label>Интервал (дней)</label><input id="interval_days" type="number" min="1" value="1"></div>
     <div id="f_schedule" class="fields"><div class="grid-3">
       <div><label>День месяца</label><input id="day_of_month" type="number" min="1" max="31" value="5"></div>
       <div><label>Час</label><input id="hour" type="number" min="0" max="23" value="17"></div>
@@ -234,7 +254,7 @@ async function renderCompany(email) {
     <div class="card">
       <h2>История сверок</h2>
       <table>
-        <thead><tr><th>ID</th><th>Начало</th><th>Отправлена</th><th>Писем</th><th></th></tr></thead>
+        <thead><tr><th>ID</th><th>Итерация</th><th>Начало</th><th>Отправлена</th><th>Писем</th><th></th></tr></thead>
         <tbody id="recon-body"></tbody>
       </table>
     </div>`
@@ -284,22 +304,25 @@ async function renderCompany(email) {
 
     const tbody = app.querySelector("#recon-body");
     if (!reconciliations.length) {
-      tbody.innerHTML = `<tr><td colspan="5" class="empty">Сверок пока нет</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">Сверок пока нет</td></tr>`;
     } else {
       tbody.innerHTML = reconciliations
         .map((r) => {
           const open = !r.sent_at;
           const pending = Number(r.pending_count || 0);
-          // «Отправить» показываем, если сверка открыта или если в уже
-          // отправленную сверку добавлены новые/изменённые письма.
           const canSend = open || pending > 0;
           const sendBtn = canSend
             ? `<button type="button" class="btn btn-sm btn-primary" data-send="${r.id}">Отправить${
                 !open && pending > 0 ? ` (+${pending})` : ""
               }</button>`
             : "";
+          const iter = Number(r.iteration || 0);
+          const sentIters = Number(r.sent_iterations || 0);
+          const iterHint = pending > 0 && sentIters > 0 ? " (готовится дополнение)" : "";
+          const iterCell = iter > 0 ? `#${iter}` : "—";
           return `<tr>
             <td><strong>#${r.id}</strong>${open ? ' <span class="recon-open">открыта</span>' : ""}</td>
+            <td title="Отправлений: ${sentIters}${iterHint}">${iterCell}</td>
             <td>${formatDt(r.started_at)}</td>
             <td>${formatDt(r.sent_at)}</td>
             <td>${r.letter_count || 0}</td>

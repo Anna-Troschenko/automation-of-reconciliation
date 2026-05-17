@@ -130,14 +130,24 @@ def list_reconciliations_for_recipient(
                 WHERE c.reconciliation_id = r.id) AS letter_count,
                (SELECT COUNT(*) FROM confirmations c
                 WHERE c.reconciliation_id = r.id
-                  AND c.digest_sent_at IS NULL) AS pending_count
+                  AND c.digest_sent_at IS NULL) AS pending_count,
+               (SELECT COUNT(DISTINCT c.digest_sent_at) FROM confirmations c
+                WHERE c.reconciliation_id = r.id
+                  AND c.digest_sent_at IS NOT NULL) AS sent_iterations
         FROM reconciliations r
         WHERE r.recipient_email = ? COLLATE NOCASE
         ORDER BY r.id DESC
         """,
         (em,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        d = dict(row)
+        sent_iters = int(d.get("sent_iterations") or 0)
+        d["iteration"] = max(0, sent_iters - 1) if sent_iters > 0 else 0
+        d["sent_iterations"] = sent_iters
+        result.append(d)
+    return result
 
 def confirmation_lines_for_reconciliation(
     conn: sqlite3.Connection, reconciliation_id: int

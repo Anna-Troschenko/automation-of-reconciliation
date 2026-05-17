@@ -73,9 +73,9 @@ def _validate_payload(data: dict[str, Any]) -> tuple[str, str, dict[str, Any], s
     company_name = str(data.get("company_name", "")).strip()
     cfg = dict(data.get("trigger_config") or {})
     if trigger_type == "interval":
-        sec = int(cfg.get("interval_seconds", 300))
-        if sec < 30:
-            raise ValueError("Интервал не менее 30 секунд")
+        sec = int(cfg.get("interval_seconds", 86400))
+        if sec < 86400:
+            raise ValueError("Интервал не менее 1 дня")
         cfg = {"interval_seconds": sec}
     elif trigger_type == "schedule":
         day = int(cfg.get("day_of_month", 1))
