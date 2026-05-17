@@ -225,7 +225,7 @@ function triggerFormHtml() {
       <div><label>Час</label><input id="hour" type="number" min="0" max="23" value="17"></div>
       <div><label>Минута</label><input id="minute" type="number" min="0" max="59" value="0"></div>
     </div><label style="margin-top:0.5rem">Часовой пояс</label><input id="timezone" value="Europe/Moscow"></div>
-    <div id="f_count" class="fields"><label>Минимум писем</label><input id="min_count" type="number" min="1" value="10"></div>
+    <div id="f_count" class="fields"><label>Минимум явлений</label><input id="min_count" type="number" min="1" value="10"></div>
     <div id="f_keyword" class="fields"><label>Кодовое слово</label><input id="phrase" placeholder="отправить сверку сейчас"></div>`;
 }
 
