@@ -9,6 +9,13 @@ CONFIRMATION_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+DELETION_PATTERN = re.compile(
+    r"Удаление\s+нежелательного\s+явления\s+([A-Za-zА-Яа-я0-9_\-]+)\s*,\s*"
+    r"сопоставленный\s+ID\s*:\s*([A-Za-zА-Яа-я0-9_\-]+)"
+    r"(?:\s*\.?\s*Дата\s+явления\s*:\s*(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}))?",
+    re.IGNORECASE | re.DOTALL,
+)
+
 APPEND_RECONCILIATION_PATTERN = re.compile(
     r"Дополнение\s+в\s+сверку\s*(?:№|#)?\s*(\d+)",
     re.IGNORECASE,

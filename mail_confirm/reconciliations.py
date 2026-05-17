@@ -184,6 +184,40 @@ def confirmation_rows_for_reconciliation(
         (reconciliation_id,),
     ).fetchall()
 
+def delete_pending_from_reconciliation(
+    conn: sqlite3.Connection,
+    reconciliation_id: int,
+    deletions: list[tuple[str, str, Optional[str]]],
+) -> int:
+
+    if not deletions:
+        return 0
+
+    total_removed = 0
+    for id_yav, id_sop, event_date in deletions:
+        params: list[object] = [reconciliation_id, str(id_yav), str(id_sop)]
+        where_date = ""
+        if event_date:
+            where_date = " AND event_date = ?"
+            params.append(event_date)
+        cur = conn.execute(
+            f"""
+            DELETE FROM confirmations
+            WHERE reconciliation_id = ?
+              AND digest_sent_at IS NULL
+              AND id_yavleniya = ?
+              AND id_sopostavlennyi = ?{where_date}
+            """,
+            params,
+        )
+        total_removed += cur.rowcount or 0
+
+    if total_removed:
+        refresh_reconciliation_started_at(conn, reconciliation_id)
+
+    return total_removed
+
+
 def mark_reconciliation_sent(
     conn: sqlite3.Connection, reconciliation_id: int, when: str
 ) -> None:

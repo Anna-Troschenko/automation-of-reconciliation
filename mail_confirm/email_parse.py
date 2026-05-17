@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 from mail_confirm.constants import (
     APPEND_RECONCILIATION_PATTERN,
     CONFIRMATION_PATTERN,
+    DELETION_PATTERN,
     DIGEST_SMTP_SUBJECT,
     END_OF_RECONCILIATION_PATTERN,
 )
@@ -80,6 +81,28 @@ def parse_confirmation(text: str) -> Optional[Tuple[str, str, Optional[str]]]:
     """Первое подтверждение из письма (back-compat). См. parse_confirmations."""
     items = parse_confirmations(text)
     return items[0] if items else None
+
+def parse_deletions(text: str) -> list[Tuple[str, str, Optional[str]]]:
+    """Найти все строки «Удаление нежелательного явления …» в письме.
+
+    Возвращает список кортежей `(id_yavleniya, id_sopostavlennyi, event_date_iso_or_None)`
+    — структура такая же, как у `parse_confirmations`, чтобы было удобно матчить
+    удаляемые строки против уже сохранённых в БД подтверждений."""
+    if not text:
+        return []
+    out: list[Tuple[str, str, Optional[str]]] = []
+    seen: set[tuple[str, str, Optional[str]]] = set()
+    for m in DELETION_PATTERN.finditer(text.replace("\r\n", "\n")):
+        id_yav = m.group(1).strip()
+        id_sop = m.group(2).strip()
+        raw_date = (m.group(3) or "").strip()
+        event_date = _normalize_dmy_to_iso(raw_date) if raw_date else None
+        key = (id_yav, id_sop, event_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
 
 def has_end_of_reconciliation_marker(text: str) -> bool:
     """В конце письма стоит «Окончание редактирования сверки.» —

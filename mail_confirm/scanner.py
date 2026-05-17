@@ -24,6 +24,7 @@ from mail_confirm.email_parse import (
     message_dedupe_key,
     parse_append_reconciliation_id,
     parse_confirmations,
+    parse_deletions,
     primary_recipient_email,
 )
 
@@ -88,7 +89,8 @@ def scan_sent_and_store(
                     file=sys.stderr,
                 )
         confirmations = parse_confirmations(body)
-        if not confirmations:
+        deletions = parse_deletions(body)
+        if not confirmations and not deletions:
             continue
 
         subj = decode_mime_header(msg.get("Subject") or "")
@@ -101,6 +103,12 @@ def scan_sent_and_store(
         if stdout_only:
             for id_yav, id_sop, event_date in confirmations:
                 print(format_confirmation_line(id_yav, id_sop, event_date))
+            for id_yav, id_sop, event_date in deletions:
+                date_info = f". Дата явления: {event_date}" if event_date else ""
+                print(
+                    f"Удаление нежелательного явления {id_yav}, "
+                    f"сопоставленный ID: {id_sop}{date_info}"
+                )
             continue
 
         if dry_run:
@@ -112,13 +120,19 @@ def scan_sent_and_store(
                     f"Найдено: явление={id_yav}, сопоставленный={id_sop}{date_info} | "
                     f"To={recipient!r} | {subj[:60]!r}{extra}{end_info}"
                 )
+            for id_yav, id_sop, event_date in deletions:
+                date_info = f" | дата явления={event_date}" if event_date else ""
+                print(
+                    f"Удаление: явление={id_yav}, сопоставленный={id_sop}{date_info} | "
+                    f"To={recipient!r} | {subj[:60]!r}{extra}{end_info}"
+                )
             continue
 
         if not recipient:
             if not warned_no_recipient:
                 print(
-                    "IMAP: обнаружено письмо с подтверждением, но без адреса получателя (To/Delivered-To пуст). "
-                    "Такие письма не сохраняются в БД, т.к. для них невозможна отправка сводки.",
+                    "IMAP: обнаружено письмо с подтверждением/удалением, но без адреса получателя (To/Delivered-To пуст). "
+                    "Такие письма не обрабатываются, т.к. для них невозможна отправка сводки.",
                     file=sys.stderr,
                 )
                 warned_no_recipient = True
@@ -196,7 +210,41 @@ def scan_sent_and_store(
                     f"для {recipient}",
                     file=sys.stderr,
                 )
-            if end_marker and inserted_in_msg:
+
+            removed_in_msg = 0
+            if deletions:
+                from mail_confirm.reconciliations import (
+                    delete_pending_from_reconciliation,
+                    get_open_reconciliation_id,
+                )
+
+                target_rid: Optional[int] = append_rid
+                if target_rid is None:
+                    target_rid = get_open_reconciliation_id(conn, recipient)
+                if target_rid is None:
+                    print(
+                        f"IMAP: запрос на удаление {len(deletions)} строк(и) от {recipient}, "
+                        f"но открытой сверки нет — пропуск.",
+                        file=sys.stderr,
+                    )
+                else:
+                    removed_in_msg = delete_pending_from_reconciliation(
+                        conn, target_rid, deletions
+                    )
+                    if removed_in_msg:
+                        print(
+                            f"IMAP: удалено {removed_in_msg} pending-строк(и) из сверки "
+                            f"#{target_rid} для {recipient}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"IMAP: запрос на удаление {len(deletions)} строк(и) из сверки "
+                            f"#{target_rid} для {recipient} — совпадений среди pending нет.",
+                            file=sys.stderr,
+                        )
+
+            if end_marker and (inserted_in_msg or removed_in_msg):
                 from mail_confirm.db import request_immediate_digest
 
                 request_immediate_digest(conn, recipient)
